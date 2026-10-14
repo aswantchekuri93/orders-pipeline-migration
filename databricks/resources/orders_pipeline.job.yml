@@ -1,0 +1,99 @@
+# The whole old AWS flow in one file:
+#
+#   Lambda (S3 event / schedule)   ->  trigger:  (file arrival)   or  schedule:  (cron)
+#   Step Functions state machine    ->  tasks: + depends_on:
+#   Glue job "orders-validate"      ->  ingest_bronze + validate
+#   Glue job "orders-process"       ->  process_silver + publish_gold
+#   Catch -> SNS "FAILED"           ->  email_notifications: on_failure:
+#
+# Paths below are relative to THIS file.
+
+resources:
+  jobs:
+    orders_pipeline:
+      name: orders_pipeline_${bundle.target}
+
+      # One run at a time; extra triggers wait in line instead of overlapping
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
+
+      # ---- Replaces the Lambda trigger ------------------------------------------
+      # Option A (used here): run when a NEW file lands in the incoming folder.
+      #   Needs a Unity Catalog volume or external location. Overwriting an existing
+      #   file with the same name does not trigger a run. No wildcards in the path.
+      trigger:
+        pause_status: UNPAUSED
+        file_arrival:
+          url: /Volumes/${var.catalog}/bronze/landing/incoming/
+          min_time_between_triggers_seconds: 60
+          wait_after_last_change_seconds: 60
+
+      # Option B: run on a schedule instead (use ONE of A or B; delete the other).
+      # schedule:
+      #   quartz_cron_expression: "0 0 2 * * ?"   # every day at 02:00
+      #   timezone_id: Asia/Kolkata
+      #   pause_status: UNPAUSED
+
+      # ---- Replaces Catch -> SNS "FAILED" ---------------------------------------
+      email_notifications:
+        on_failure:
+          - ${var.alert_email}
+
+      # Serverless compute for Python tasks (no cluster to size or manage)
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+
+      # ---- Replaces the Step Functions states -----------------------------------
+      # A task only starts after every task in depends_on succeeded. If validate
+      # fails (too many bad rows), process_silver and publish_gold are skipped.
+      tasks:
+        - task_key: ingest_bronze
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/orders_pipeline/tasks/ingest.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--run-id"
+              - "{{job.run_id}}"
+
+        - task_key: validate
+          depends_on:
+            - task_key: ingest_bronze
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/orders_pipeline/tasks/validate.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--run-id"
+              - "{{job.run_id}}"
+              - "--max-reject-rate"
+              - "${var.max_reject_rate}"
+
+        - task_key: process_silver
+          depends_on:
+            - task_key: validate
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/orders_pipeline/tasks/process.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--run-id"
+              - "{{job.run_id}}"
+
+        - task_key: publish_gold
+          depends_on:
+            - task_key: process_silver
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/orders_pipeline/tasks/publish.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--run-id"
+              - "{{job.run_id}}"

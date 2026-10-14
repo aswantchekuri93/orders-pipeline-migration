@@ -1,0 +1,54 @@
+{
+  "Comment": "BEFORE (AWS): orchestration. Reference only. DBX: these states become tasks in a Databricks job (depends_on), and the Catch/SNS part becomes job failure notifications.",
+  "StartAt": "ValidateData",
+  "States": {
+    "ValidateData": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "orders-validate",
+        "Arguments": {
+          "--source_path.$": "$.source_path",
+          "--run_date.$": "$.run_date"
+        }
+      },
+      "ResultPath": "$.validate",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "NotifyFailure" }
+      ],
+      "Next": "ProcessData"
+    },
+    "ProcessData": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "orders-process",
+        "Arguments": { "--run_date.$": "$.run_date" }
+      },
+      "ResultPath": "$.process",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "NotifyFailure" }
+      ],
+      "Next": "NotifySuccess"
+    },
+    "NotifySuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:ap-south-1:123456789012:orders-pipeline",
+        "Message": "orders pipeline succeeded"
+      },
+      "End": true
+    },
+    "NotifyFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:ap-south-1:123456789012:orders-pipeline",
+        "Message": "orders pipeline FAILED"
+      },
+      "Next": "Failed"
+    },
+    "Failed": { "Type": "Fail", "Error": "PipelineFailed", "Cause": "See Glue job logs in CloudWatch" }
+  }
+}

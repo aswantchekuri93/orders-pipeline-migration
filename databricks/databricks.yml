@@ -1,0 +1,43 @@
+# Databricks Asset Bundle: the pipeline's code + job definition, deployed from GitHub.
+# Replaces: CloudFormation/CDK/Terraform for Lambda + Step Functions + Glue.
+#
+# IMPORTANT: replace every <placeholder> below, then run:
+#     databricks bundle validate -t dev
+# Validation is how you confirm field names against YOUR CLI version.
+
+bundle:
+  name: orders_pipeline
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog that holds this pipeline's schemas
+    default: dev_orders
+  alert_email:
+    description: Who gets an email when the pipeline fails
+    default: <you@example.com>
+  max_reject_rate:
+    description: Fail the run if more than this share of rows is rejected (0.25 = 25%)
+    default: "0.25"
+
+targets:
+  dev:
+    mode: development   # prefixes names with your username; triggers/schedules start paused
+    default: true
+    workspace:
+      host: <https://your-dev-workspace.cloud.databricks.com>
+    variables:
+      catalog: dev_orders
+
+  prod:
+    mode: production
+    workspace:
+      host: <https://your-prod-workspace.cloud.databricks.com>
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog: prod_orders
+    run_as:
+      # Production jobs should run as a service principal, not as a person
+      service_principal_name: <service-principal-application-id>
